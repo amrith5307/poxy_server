@@ -74,11 +74,12 @@ int handle_request(int clientSocket, struct ParsedRequest* request, char* full_u
 
     int server_port = (request->port) ? atoi(request->port) : 80;
 
+    // Connect to remote server
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
     if(remoteSocket < 0) { perror("Socket creation failed"); free(buf); return -1; }
 
     struct hostent* host = gethostbyname(request->host);
-    if(!host) { fprintf(stderr,"Host not found\n"); free(buf); return -1; }
+    if(!host) { fprintf(stderr,"Host not found: %s\n", request->host); free(buf); return -1; }
 
     struct sockaddr_in server_addr;
     bzero(&server_addr, sizeof(server_addr));
@@ -121,7 +122,6 @@ void* thread_fn(void* socketPtr) {
     sem_wait(&semaphore);
 
     int clientSocket = *(int*)socketPtr;
-
     char* buffer = (char*)calloc(MAX_BYTES, sizeof(char));
     int bytes_received = recv(clientSocket, buffer, MAX_BYTES, 0);
 
@@ -135,6 +135,10 @@ void* thread_fn(void* socketPtr) {
     struct ParsedRequest* request = ParsedRequest_create();
     if(ParsedRequest_parse(request, buffer, bytes_received) >= 0) {
 
+        // Get Host header properly
+        struct ParsedHeader* host_header_struct = ParsedHeader_get(request, "Host");
+        char* host_header = host_header_struct ? host_header_struct->value : request->host;
+
         char client_ip[INET_ADDRSTRLEN];
         struct sockaddr_in client_addr;
         socklen_t len = sizeof(client_addr);
@@ -146,12 +150,12 @@ void* thread_fn(void* socketPtr) {
         printf("----------------------------------------------------------\n");
         printf("Request Details:\n");
         printf("  Method : %s\n", request->method);
-        printf("  Host   : %s\n", request->host);
+        printf("  Host   : %s\n", host_header);
         printf("  Path   : %s\n", request->path);
         printf("----------------------------------------------------------\n");
 
         char full_url[1024];
-        snprintf(full_url, sizeof(full_url), "%s%s", request->host, request->path);
+        snprintf(full_url, sizeof(full_url), "%s%s", host_header, request->path);
 
         cache_element* cached = find(full_url);
         if(cached) {
@@ -160,10 +164,10 @@ void* thread_fn(void* socketPtr) {
         } else {
             printf("Cache Status: MISS\n");
             printf("Fetching from remote server: %s\n", full_url);
+            handle_request(clientSocket, request, full_url);
         }
-        printf("==========================================================\n");
 
-        if(!cached) handle_request(clientSocket, request, full_url);
+        printf("==========================================================\n");
 
     } else {
         printf("Failed to parse request\n");
@@ -280,7 +284,6 @@ cache_element* find(char* url) {
         site = head;
         while (site != NULL) {
             if(!strcmp(site->url, url)) {
-                printf("Cache HIT: %s\n", url);
                 site->lru_time_track = time(NULL);
                 pthread_mutex_unlock(&lock);
                 return site;
@@ -289,7 +292,6 @@ cache_element* find(char* url) {
         }
     }
 
-    printf("Cache MISS: %s\n", url);
     pthread_mutex_unlock(&lock);
     return NULL;
 }
