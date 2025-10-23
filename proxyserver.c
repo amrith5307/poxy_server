@@ -50,11 +50,14 @@ void normalize_path(char* path) {
         if(path[i] == '\\') path[i] = '/';
 }
 
-// ---------------- HANDLE REQUEST ----------------
+// ---------------- HANDLE REQUEST (FIXED FULL) ----------------
 int handle_request(int clientSocket, struct ParsedRequest* request, char* full_url) {
     char* buf = (char*)malloc(sizeof(char) * MAX_BYTES);
+    if(!buf) return -1;
+
     normalize_path(request->path);
 
+    // Build the GET request
     strcpy(buf, "GET ");
     strcat(buf, request->path);
     strcat(buf, " ");
@@ -76,10 +79,21 @@ int handle_request(int clientSocket, struct ParsedRequest* request, char* full_u
 
     // Connect to remote server
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if(remoteSocket < 0) { perror("Socket creation failed"); free(buf); return -1; }
+    if(remoteSocket < 0) {
+        perror("Socket creation failed");
+        sendErrorMessage(clientSocket, 500);
+        free(buf);
+        return -1;
+    }
 
     struct hostent* host = gethostbyname(request->host);
-    if(!host) { fprintf(stderr,"Host not found: %s\n", request->host); free(buf); return -1; }
+    if(!host) {
+        fprintf(stderr,"Host not found: %s\n", request->host);
+        sendErrorMessage(clientSocket, 500);
+        free(buf);
+        close(remoteSocket);
+        return -1;
+    }
 
     struct sockaddr_in server_addr;
     bzero(&server_addr, sizeof(server_addr));
@@ -89,23 +103,55 @@ int handle_request(int clientSocket, struct ParsedRequest* request, char* full_u
 
     if(connect(remoteSocket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("Connect failed");
+        sendErrorMessage(clientSocket, 500);
         free(buf);
+        close(remoteSocket);
         return -1;
     }
 
-    send(remoteSocket, buf, strlen(buf), 0);
+    // Send request to remote server
+    if(send(remoteSocket, buf, strlen(buf), 0) < 0) {
+        perror("Send failed");
+        sendErrorMessage(clientSocket, 500);
+        free(buf);
+        close(remoteSocket);
+        return -1;
+    }
+
     bzero(buf, MAX_BYTES);
 
+    // Receive response from server and forward to client
     int bytes_recv = recv(remoteSocket, buf, MAX_BYTES-1, 0);
-    char* temp_buffer = (char*)malloc(MAX_BYTES);
+    if(bytes_recv <= 0) {
+        sendErrorMessage(clientSocket, 500);
+        free(buf);
+        close(remoteSocket);
+        return -1;
+    }
+
+    // Dynamically store response for caching
+    int temp_capacity = MAX_BYTES;
+    char* temp_buffer = (char*)malloc(temp_capacity);
+    if(!temp_buffer) { free(buf); close(remoteSocket); return -1; }
     int temp_index = 0;
 
     while(bytes_recv > 0) {
-        send(clientSocket, buf, bytes_recv, 0);
-        for(int i=0;i<bytes_recv;i++) temp_buffer[temp_index++] = buf[i];
+        send(clientSocket, buf, bytes_recv, 0); // forward to client
+
+        // Resize temp_buffer if needed
+        if(temp_index + bytes_recv >= temp_capacity) {
+            temp_capacity *= 2;
+            temp_buffer = realloc(temp_buffer, temp_capacity);
+            if(!temp_buffer) { free(buf); close(remoteSocket); return -1; }
+        }
+
+        memcpy(temp_buffer + temp_index, buf, bytes_recv);
+        temp_index += bytes_recv;
+
         bzero(buf, MAX_BYTES);
         bytes_recv = recv(remoteSocket, buf, MAX_BYTES-1, 0);
     }
+
     temp_buffer[temp_index] = '\0';
 
     add_cache_element(temp_buffer, temp_index, full_url);
@@ -116,6 +162,7 @@ int handle_request(int clientSocket, struct ParsedRequest* request, char* full_u
 
     return 0;
 }
+
 
 // ---------------- THREAD FUNCTION ----------------
 void* thread_fn(void* socketPtr) {
