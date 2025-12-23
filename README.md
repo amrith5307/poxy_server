@@ -34,11 +34,6 @@ using mutexes and semaphores.
 - HTTP Protocol
 - LRU Cache Design
 
-## Project Structure
-.
-├── proxy.c
-├── proxy_parse.h
-├── README.md
 
 ## Compilation and Execution
 
