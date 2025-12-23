@@ -1,4 +1,4 @@
-# Multithreaded HTTP Proxy Server with Caching
+# Multithreaded Proxy Server with Caching
 
 ## Overview
 This project implements a multithreaded HTTP proxy server in C using socket programming.
